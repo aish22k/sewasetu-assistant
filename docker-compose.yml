@@ -1,0 +1,110 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sewasetu
+      POSTGRES_USER: sewasetu
+      POSTGRES_PASSWORD: sewasetu123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./app/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./seed/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+
+  app:
+    build: ./app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-before-deploying}
+      # starting password of the officer accounts (if empty, ADMIN_PASSWORD is used)
+      OFFICER_PASSWORD: ${OFFICER_PASSWORD:-}
+      # the address at which people reach this portal; stamped into sign-in tokens and
+      # discovery documents, so it must be the public one when deployed
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      # leave empty to keep the date from app.ini; set e.g. 2027-03-31 23:59 to move it
+      SCHEME_DEADLINE: ${SCHEME_DEADLINE:-}
+    depends_on:
+      - db
+      - smsgw
+    volumes:
+      - uploads:/var/sewasetu/uploads
+      - applogs:/var/log/sewasetu
+
+  scheduler:
+    build: ./app
+    restart: unless-stopped
+    # Run the deemed-approval job once at startup (so a freshly restored
+    # database is brought up to date), then hand over to cron for the nightly run.
+    command: ["sh", "-c", "until python /app/scripts/deemed_approval.py; do sleep 5; done; exec cron -f"]
+    depends_on:
+      - db
+    volumes:
+      - applogs:/var/log/sewasetu
+
+  assistant:
+    build:
+      context: .
+      dockerfile: assistant/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      # must match the portal's PUBLIC_BASE_URL exactly (it is stamped into sign-in tokens)
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      # the address at which people reach this assistant; each endpoint's address is the
+      # "audience" its sign-in tokens must carry
+      ASSISTANT_BASE_URL: ${ASSISTANT_BASE_URL:-http://localhost:9000}
+      PORTAL_INTERNAL_URL: http://app:8000
+      # leave empty to keep the date from app.ini; set e.g. 2027-03-31 23:59 to move it
+      SCHEME_DEADLINE: ${SCHEME_DEADLINE:-}
+      # only used when you run the evals by hand (assistant/run_evals.py); the server itself never calls it
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EVAL_MODEL: ${EVAL_MODEL:-gpt-4o-mini}
+      EVAL_OFFICER_PASSWORD: ${EVAL_OFFICER_PASSWORD:-Test12345}
+    volumes:
+      # the same uploads folder the portal uses, so documents saved here are visible to the portal
+      - uploads:/var/sewasetu/uploads
+      # eval results: written by run_evals.py, shown by the server at /eval-dashboard
+      - evals:/var/sewasetu/evals
+    depends_on:
+      - db
+      - app
+      - smsgw
+
+  smsgw:
+    build: ./smsgw
+    restart: unless-stopped
+    # internal only — reached by the app over the docker network and exposed to
+    # users via the app at /__gateway/ (so no second host port is needed)
+    expose:
+      - "8025"
+
+  # HTTPS in front of both. Only started on the server:  docker compose --profile deploy up --build -d
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    profiles: ["deploy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PORTAL_HOST: ${PORTAL_HOST:-localhost}
+      ASSISTANT_HOST: ${ASSISTANT_HOST:-assistant.localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+      - assistant
+
+volumes:
+  pgdata:
+  uploads:
+  applogs:
+  evals:
+  caddy_data:
+  caddy_config:

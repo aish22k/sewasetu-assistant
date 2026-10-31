@@ -1,0 +1,17 @@
+# HTTPS for the deployment (used by the "caddy" service, started with --profile deploy).
+# Caddy gets and renews the certificates by itself, so both names must already point to the server.
+#
+#   PORTAL_HOST     the portal         e.g. sewasetu.example.in
+#   ASSISTANT_HOST  the two MCP servers + /eval-dashboard   e.g. assistant.example.in
+
+{$PORTAL_HOST} {
+	reverse_proxy app:8000 {
+		flush_interval -1
+	}
+}
+
+{$ASSISTANT_HOST} {
+	reverse_proxy assistant:9000 {
+		flush_interval -1
+	}
+}
